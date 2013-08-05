@@ -1,117 +1,154 @@
-;(function(factory) {
-    //AMD
-    if (typeof define === "function" && define.amd) {
+// knockout-classBindingProvider v0.4.1 | (c) 2013 Ryan Niemeyer | http://www.opensource.org/licenses/mit-license
+!(function (factory) {
+    if (typeof require === "function" && typeof exports === "object" && typeof module === "object") {
+        // CommonJS or Node: hard-coded dependency on "knockout"
+        factory(require("knockout"), exports);
+    } else if (typeof define === "function" && define["amd"]) {
+        // AMD anonymous module with hard-coded dependency on "knockout"
         define(["knockout", "exports"], factory);
-        //normal script tag
     } else {
+        // <script> tag: use the global `ko` object, attaching a `bindings` property
         factory(ko);
     }
-}(function(ko, exports, undefined) {
-    //a bindingProvider that uses something different than data-bind attributes
-    //  bindings - an object that contains the binding classes
-    //  options - is an object that can include "attribute", "virtualAttribute", bindingRouter, and "fallback" options
-    var classBindingsProvider = function(bindings, options) {
-        var existingProvider = new ko.bindingProvider();
-
-        options = options || {};
-
-        //override the attribute
-        this.attribute = options.attribute || "data-class";
-        
-        //override the virtual attribute
-        this.virtualAttribute = "ko " + (options.virtualAttribute || "class") + ":";
-
-        //fallback to the existing binding provider, if bindings are not found
-        this.fallback = options.fallback;
-
-        //this object holds the binding classes
-        this.bindings = bindings || {};
-
-        //returns a binding class, given the class name and the bindings object
-        this.bindingRouter = options.bindingRouter || function(className, bindings) {
-            var i, j, classPath, bindingObject;
-
-            //if the class name matches a property directly, then return it
-            if (bindings[className]) {
-                return bindings[className];
-            }
-
-            //search for sub-properites that might contain the bindings
-            classPath = className.split(".");
-            bindingObject = bindings;
-
-            for (i = 0, j = classPath.length; i < j; i++) {
-                bindingObject = bindingObject[classPath[i]];
-            }
-
-            return bindingObject;
-        };
-        
-        //allow bindings to be registered after instantiation
-        this.registerBindings = function(newBindings) {
-          ko.utils.extend(this.bindings, newBindings);
+}(function (ko, exports) {
+    var plugin = "bindings",
+        space = /\s/.test("\u00A0") ? "\\s+" : "[\\s\\u00A0]+",
+        glueRegex = new RegExp(space, "g"),
+        trimRegex = new RegExp("^" + space + "|" + space + "$", "g"),
+        trim = function (string) {
+            return (!!string) ? string.replace(trimRegex, "") : "";
         };
 
-        //determine if an element has any bindings
-        this.nodeHasBindings = function(node) {
-            var result, value;
+    function ClassBindings(underlyingProvider, options) {
+        this.bindings = {};
+        this.setOptions(options);
+        this.underlyingProvider = underlyingProvider;
+    }
 
-            if (node.nodeType === 1) {
-                result = node.getAttribute(this.attribute);
-            }
-            else if (node.nodeType === 8) {
-                value = "" + node.nodeValue || node.text;
-                result = value.indexOf(this.virtualAttribute) > -1;
-            }
+    ClassBindings.prototype = {
+        /**
+         * Apply configuration options for current instance.
+         * @param {Object} options
+         */
+        setOptions: function (options) {
+            this.options = options || (options = {});
+            this.fallback = !!options.fallback;
+            this.attribute = options.attribute || "data-class";
+            this.virtualAttribute = "ko " + (options.virtualAttribute || "class") + ":";
+        },
 
-            if (!result && this.fallback) {
-                result = existingProvider.nodeHasBindings(node);
-            }
+        /**
+         * Returns true if given node has bindings.
+         * @param {HTMLElement|Comment|Node} node
+         * @param {Object} bindingContext
+         * @return {Boolean}
+         */
+        nodeHasBindings: function ClassBindings$nodeHasBindings(node, bindingContext) {
+            var nodeType = node.nodeType;
+            return (1 === nodeType && node.getAttribute(this.attribute))
+                || (8 === nodeType && -1 !== ("" + node.nodeValue || node.text).indexOf(this.virtualAttribute))
+                || (this.fallback && this.underlyingProvider.nodeHasBindings(node, bindingContext));
+        },
 
-            return result;
-        };
+        /**
+         * Returns bindings for given node.
+         * @param {HTMLElement|Comment|Node} node
+         * @param {Object} bindingContext
+         * @return {Object}
+         */
+        getBindings: function ClassBindings$getBindings(node, bindingContext) {
+            var classList = this.getClassList(node),
+                bindings = {},
+                source = this.bindings;
 
-        //return the bindings given a node and the bindingContext
-        this.getBindings = function(node, bindingContext) {
-            var i, j, bindingAccessor, binding,
-                result = {},
-                value, index,
-                classes = "";
-
-            if (node.nodeType === 1) {
-                classes = node.getAttribute(this.attribute);
-            }
-            else if (node.nodeType === 8) {
-                value = "" + node.nodeValue || node.text;
-                index = value.indexOf(this.virtualAttribute);
-
-                if (index > -1) {
-                    classes = value.substring(index + this.virtualAttribute.length);
-                }
-            }
-
-            if (classes) {
-                classes = classes.replace(/^(\s|\u00A0)+|(\s|\u00A0)+$/g, "").replace(/(\s|\u00A0){2,}/g, " ").split(' ');
-                //evaluate each class, build a single object to return
-                for (i = 0, j = classes.length; i < j; i++) {
-                    bindingAccessor = this.bindingRouter(classes[i], this.bindings);
-                    if (bindingAccessor) {
-                        binding = typeof bindingAccessor == "function" ? bindingAccessor.call(bindingContext.$data, bindingContext, classes) : bindingAccessor;
-                        ko.utils.extend(result, binding);
+            if (!!classList) {
+                for (var i = 0, length = classList.length; i < length; i++) {
+                    var bindingAccessor = this.queryBindings(classList[i], source);
+                    if (!!bindingAccessor) {
+                        ko.utils.extend(bindings, "function" === typeof(bindingAccessor)
+                            ? bindingAccessor.call(bindingContext.$data, bindingContext, node, classList)
+                            : bindingAccessor);
                     }
                 }
             }
             else if (this.fallback) {
-                result = existingProvider.getBindings(node,bindingContext);
+                bindings = this.underlyingProvider.getBindings(node, bindingContext);
+            }
+            return bindings;
+        },
+
+        /**
+         * Adds bindings into current collection.
+         * @param {Object} bindings
+         */
+        addBindings: function ClassBindings$addBindings(bindings) {
+            this.mergeBindings(this.bindings, bindings);
+        },
+
+        /**
+         * Clears current bindings.
+         */
+        clearBindings: function(){
+            this.bindings = {};
+        },
+
+        /**
+         * Returns bindings for query (object used as bindings source).
+         * @param query
+         * @param object
+         * @return {*}
+         */
+        queryBindings: function ClassBindings$queryBindings(query, object) {
+            if (!!object) {
+                if (!!object[query]) {
+                    return object[query];
+                }
+                var offset = query.indexOf(".");
+                if (-1 !== offset) {
+                    return ClassBindings$queryBindings(query.substring(-~offset), object[query.substring(0, offset)]);
+                }
+            }
+        },
+
+        /**
+         * Merges bindings without overwriting.
+         * @param {Object} existingBindings
+         * @param {Object} bindings
+         */
+        mergeBindings: function ClassBindings$mergeBindings(existingBindings, bindings) {
+            for (var key in bindings) {
+                if (bindings.hasOwnProperty(key)){
+                    (existingBindings.hasOwnProperty(key) && "object" === typeof (bindings[key]))
+                        ? ClassBindings$mergeBindings(existingBindings[key], bindings[key])
+                        : (existingBindings[key] = bindings[key]);
+                }
+            }
+        },
+
+        /**
+         * Returns class list of bindings for given node.
+         * @param {HTMLElement|Node|Comment} node
+         * @return {Array|Boolean}
+         */
+        getClassList: function ClassBindings$getClassList(node) {
+            var nodeType = node.nodeType,
+                source;
+
+            if (1 === nodeType) {
+                source = node.getAttribute(this.attribute);
+            }
+            else if (8 === nodeType) {
+                var value = "" + node.nodeValue || node.text,
+                    index = value.indexOf(this.virtualAttribute);
+
+                if (-1 !== index) {
+                    source = value.substring(index + this.virtualAttribute.length);
+                }
             }
 
-            return result;
-        };
+            return source && trim(source).split(glueRegex);
+        }
     };
 
-    if (!exports) {
-        ko.classBindingProvider = classBindingsProvider;
-    }
-
-    return classBindingsProvider;
+    return exports[plugin] = ko[plugin] = ClassBindings;
 }));
